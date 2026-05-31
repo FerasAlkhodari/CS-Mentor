@@ -8,10 +8,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# CRA bakes REACT_APP_* vars into the static bundle at build time,
-# so the backend URL must be supplied as a build argument.
-ARG REACT_APP_BACKEND_URL
-ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
+# CRA bakes REACT_APP_* vars into the static bundle at build time.
+# Hardcoded here to bypass Coolify build-arg injection issues.
+ENV REACT_APP_BACKEND_URL=https://csmentor-api.feraswe.com
 
 COPY . .
 RUN npm run build
