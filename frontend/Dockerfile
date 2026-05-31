@@ -10,7 +10,7 @@ RUN npm ci
 
 # CRA bakes REACT_APP_* vars into the static bundle at build time.
 # Hardcoded here to bypass Coolify build-arg injection issues.
-ENV REACT_APP_BACKEND_URL=https://csmentor-api.feraswe.com
+ENV REACT_APP_BACKEND_URL=https://csmentorapi.feraswe.com
 
 COPY . .
 RUN npm run build
