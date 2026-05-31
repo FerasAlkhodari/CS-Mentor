@@ -1,60 +1,120 @@
+import re
+
 import pytest
-import sys
-import os
-from pathlib import Path
 
-# Add root directory to Python path
-backend_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(backend_dir))
+from tests.contract import MIXED_IN_SCOPE_ANSWER, REFUSAL_MESSAGE
+from model import SYSTEM_INSTRUCTION, GeminiMentor, detect_language
 
-from model import QAModel
 
 @pytest.fixture
-def qa_model():
-    return QAModel()
+def mentor():
+    return GeminiMentor()
 
-def test_model_initialization(qa_model):
-    assert qa_model.model is not None
-    assert qa_model.context is not None
 
-def test_get_answer(qa_model):
-    question = "What are algorithms?"
-    result = qa_model.get_answer(question)
-    
-    # Verify result structure
+def test_model_initialization(mentor):
+    assert mentor.client is not None
+    assert mentor.model  # a model name is always configured
+
+
+def test_detect_language():
+    assert detect_language("What is the CPU?") == "en"
+    assert detect_language("ما هو المعالج المركزي؟") == "ar"
+    assert detect_language("") == "en"
+    # Mixed input containing any Arabic script is treated as Arabic.
+    assert detect_language("What is الراوتر?") == "ar"
+
+
+def test_get_answer_english(mentor):
+    result = mentor.get_answer("What is the CIA triad?")
+
     assert isinstance(result, dict)
-    assert all(key in result for key in ["answer", "confidence", "context_used"])
-    
-    # Verify the answer contains expected keywords
-    answer = result["answer"].lower()
-    expected_keywords = ["steps", "process", "rules", "problem", "solution"]
-    matching_keywords = [keyword for keyword in expected_keywords if keyword in answer]
-    assert matching_keywords or result["confidence"] < 0.3, \
-        f"Answer '{answer}' should contain at least one of: {expected_keywords} or have low confidence handling."
+    assert set(result) == {"answer", "language"}
+    assert result["language"] == "en"
+    assert result["answer"], "Answer should not be empty."
 
-def test_empty_question(qa_model):
+
+def test_get_answer_arabic(mentor):
+    # Arabic question -> answer flagged as Arabic and containing Arabic script.
+    result = mentor.get_answer("ما هو الجدار الناري؟")
+
+    assert result["language"] == "ar"
+    assert re.search(r"[؀-ۿ]", result["answer"]), \
+        "Arabic question should yield an answer containing Arabic script."
+
+
+def test_empty_question(mentor):
     with pytest.raises(ValueError, match="Question cannot be empty"):
-        qa_model.get_answer("")
+        mentor.get_answer("")
 
-def test_missing_context_file(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)  # Change to temp directory where context.txt doesn't exist
-    with pytest.raises(FileNotFoundError, match="context.txt file is missing"):
-        QAModel()
 
-def test_empty_context_file(tmp_path):
-    # Create empty context.txt file
-    context_path = tmp_path / "context.txt"
-    context_path.write_text("")
-    
-    with pytest.MonkeyPatch().context() as m:
-        m.chdir(tmp_path)
-        with pytest.raises(ValueError, match="context.txt file is empty"):
-            QAModel()
+def test_whitespace_question(mentor):
+    with pytest.raises(ValueError, match="Question cannot be empty"):
+        mentor.get_answer("   ")
 
-def test_answer_confidence(qa_model):
-    question = "What are algorithms?"
-    result = qa_model.get_answer(question)
-    
-    confidence = result["confidence"]
-    assert confidence > 0.3 or result["answer"] == "The model is not confident enough to provide an accurate answer.", \
-        f"Confidence level {confidence} is too low without proper fallback handling."
+
+def test_missing_api_key(monkeypatch):
+    # With no key in the environment, construction must fail fast.
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+        GeminiMentor(api_key=None)
+
+
+# --------------------------------------------------------------------------- #
+# Guardrail contract — the three core scope scenarios at the model layer.
+# --------------------------------------------------------------------------- #
+
+def test_refusal_string_matches_system_prompt():
+    """The stub's refusal must byte-match the one in the production prompt."""
+    assert REFUSAL_MESSAGE in SYSTEM_INSTRUCTION
+
+
+def test_scenario_a_in_scope_query(mentor):
+    """(a) Valid in-scope query -> structured, non-empty, language-tagged."""
+    result = mentor.get_answer("What is the CIA triad?")
+
+    assert set(result) == {"answer", "language"}
+    assert result["language"] == "en"
+    assert result["answer"].strip()
+    # An in-scope answer is never the refusal string.
+    assert result["answer"] != REFUSAL_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "كيف أطبخ الكبسة؟",          # cooking (Arabic)
+        "Give me a recipe for pasta",  # cooking (English -> still refused in Arabic)
+        "Solve the integral ∫ x² dx",  # pure calculus
+    ],
+)
+def test_scenario_b_out_of_scope_exact_refusal(mentor, question):
+    """(b) Out-of-scope -> EXACTLY the Arabic refusal, zero extra text."""
+    result = mentor.get_answer(question)
+
+    # Refusal language is fixed to Arabic regardless of the question's language.
+    assert result["answer"] == REFUSAL_MESSAGE
+    # Nothing appended or prepended.
+    assert result["answer"].strip() == REFUSAL_MESSAGE
+
+
+def test_scenario_c_mixed_query_filters_out_of_scope(mentor):
+    """(c) Mixed -> answers only the in-scope (TCP/IP) part, drops the recipe."""
+    result = mentor.get_answer("Explain TCP/IP and give me a pasta recipe")
+
+    answer_lower = result["answer"].lower()
+    assert "tcp/ip" in answer_lower            # technical content present
+    assert "pasta" not in answer_lower         # out-of-scope content dropped
+    assert "recipe" not in answer_lower
+    assert result["answer"] != REFUSAL_MESSAGE  # not a blanket refusal
+    assert result["answer"] == MIXED_IN_SCOPE_ANSWER
+
+
+def test_empty_model_response_raises(mentor, monkeypatch):
+    """A blank upstream response is surfaced as a RuntimeError, not '' answer."""
+    monkeypatch.setattr(
+        mentor.client.models,
+        "generate_content",
+        lambda **kwargs: type("_Blank", (), {"text": ""})(),
+    )
+    with pytest.raises(RuntimeError, match="empty response"):
+        mentor.get_answer("What is TCP?")
