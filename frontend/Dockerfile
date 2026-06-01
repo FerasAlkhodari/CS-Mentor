@@ -9,8 +9,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # CRA bakes REACT_APP_* vars into the static bundle at build time.
-# Hardcoded here to bypass Coolify build-arg injection issues.
-ENV REACT_APP_BACKEND_URL=https://csmentorapi.feraswe.com
+# Same-origin relative path: the browser calls /api/* on the public domain,
+# and this container's nginx reverse-proxies /api -> backend over the internal
+# Docker network. No second public subdomain, no CORS, no external DNS dependency.
+ENV REACT_APP_BACKEND_URL=/api
 
 COPY . .
 RUN npm run build

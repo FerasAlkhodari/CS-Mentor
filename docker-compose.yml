@@ -1,0 +1,42 @@
+# Production orchestration for CS Mentor (Coolify "Docker Compose" build pack).
+#
+# Architecture: a single public origin (csmentor.feraswe.com) served by the
+# frontend's nginx. nginx reverse-proxies /api/* to the backend over this
+# private Docker network, so the backend needs NO public route, NO subdomain,
+# and NO external DNS. The app is fully self-contained and stays up regardless
+# of the local development machine.
+#
+# Coolify wires its Traefik proxy + TLS to the `frontend` service via the FQDN
+# you set in the Coolify UI — do not hardcode Traefik labels here.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      # Same-origin requests no longer trigger CORS, but keep a sane explicit
+      # value for any direct/external callers. Override in Coolify if needed.
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://csmentor.feraswe.com}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      RATE_LIMIT: ${RATE_LIMIT:-20/minute}
+    # Internal only — reachable from `frontend` as http://backend:8000.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    # The single public-facing service. Coolify's Traefik routes the FQDN here.
+    expose:
+      - "80"
