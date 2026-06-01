@@ -6,14 +6,20 @@
 # and NO external DNS. The app is fully self-contained and stays up regardless
 # of the local development machine.
 #
-# Coolify wires its Traefik proxy + TLS to the `frontend` service via the FQDN
-# you set in the Coolify UI — do not hardcode Traefik labels here.
+# Coolify (Docker Compose build pack) only creates a Traefik edge router when a
+# service declares the magic SERVICE_FQDN_<SERVICE>_<PORT> variable. That var is
+# what attaches the `frontend` service to Coolify's proxy network and generates
+# the Traefik labels + TLS. Without it, the stack deploys healthy but has NO
+# public listener -> ERR_CONNECTION_REFUSED. Only `frontend` gets an FQDN, so
+# the backend stays private.
 
 services:
   backend:
     build:
       context: ./backend
     restart: unless-stopped
+    networks:
+      - internal
     environment:
       # Same-origin requests no longer trigger CORS, but keep a sane explicit
       # value for any direct/external callers. Override in Coolify if needed.
@@ -37,6 +43,18 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    networks:
+      - internal
+    environment:
+      # Declares frontend:80 as the public service. Coolify generates the
+      # Traefik router/labels and attaches its proxy network from this. Set the
+      # actual domain (csmentor.feraswe.com) on this service in the Coolify UI;
+      # the "/" pins the route to the site root.
+      - SERVICE_FQDN_FRONTEND_80=/
     # The single public-facing service. Coolify's Traefik routes the FQDN here.
     expose:
       - "80"
+
+networks:
+  internal:
+    driver: bridge
